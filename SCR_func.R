@@ -1,5 +1,10 @@
 
 library(spatstat)
+library(acre)
+library(secr)
+library(tidyverse)
+
+## Simulating a single session & occasion data set
 
 sim_scr_data <- function(D, g0, sigma, xlim, ylim, traps) {
   a_m2 <- diff(xlim) * diff(ylim)
@@ -19,4 +24,54 @@ sim_scr_data <- function(D, g0, sigma, xlim, ylim, traps) {
   list(capt = capt_filt, N = N, activity_centers = activity_centers)
 }
 
+## Adapting the data set into  format required for secr and acre
+
+sim_adapt_data <- function(D, g0, sigma, xlim, ylim, traps, session_id = 1) {
+  
+  sim <- sim_scr_data(D, g0, sigma, xlim, ylim, traps)
+  
+  capt <- sim$capt
+  capthist_df <- data.frame()
+  for (i in 1:nrow(capt)) {
+    for (j in 1:ncol(capt)) {
+      if (capt[i, j] > 0) {
+        capthist_df <- rbind(capthist_df, 
+                             data.frame(session = session_id,
+                                        ID = paste0("ind", i),
+                                        trap = j,
+                                        stringsAsFactors = FALSE, occasion = 1))
+      }
+    }
+  }
+  
+  return(list(sim_data = sim, capthist_df = capthist_df))
+}
+
+## Simulating data sets and fitting models to those data sets
+
+acre_model.sim <- function(n_sims, D, g0, sigma, 
+                           xlim, ylim, traps, buffer) {
+  results <- vector("list", n_sims)
+  
+  for (i in 1:n_sims) {
+    sim_data <- sim_adapt_data(D = D, g0 = g0, sigma = sigma, 
+                               xlim = xlim, ylim = ylim, traps = traps, session_id = 1)
+    captu <- sim_data$capthist_df
+    df <- read.acre(captu, traps, control.mask = list(buffer = buffer))
+    fit <- fit.acre(df)
+    
+    results[[i]] <- summary(fit)$coefs
+  }
+  
+  all_results <- bind_rows(results, .id = "sim") %>% mutate(D = as.numeric(D), 
+                                                            g0 = as.numeric(g0), 
+                                                            sigma = as.numeric(sigma))
+  all_results_tidy <- all_results %>%
+    pivot_longer(cols = c("g0", "D", "sigma"), 
+                 names_to = "parameter", 
+                 values_to = "estimate")
+  
+  return(list(tidy = all_results_tidy, wide = all_results, results = results))
+
+}
 
