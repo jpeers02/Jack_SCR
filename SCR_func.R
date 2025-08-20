@@ -1,8 +1,13 @@
 
 library(spatstat)
-library(acre)
 library(secr)
+library(acre)
 library(tidyverse)
+load("C:/Users/Jack/Downloads/test-data.RData")
+
+# add data set to github
+
+traps.1 <- test.data$traps
 
 ## Simulating a single session & occasion data set
 
@@ -74,4 +79,14 @@ acre_model.sim <- function(n_sims, D, g0, sigma,
   return(list(tidy = all_results_tidy, wide = all_results, results = results))
 
 }
+
+# Secr Simulation
+
+# Start by simulating multi-session data - list of traps 
+
+# Buffer = 5 * Sigma
+
+# add hazard-half normal detection function simulation - good for acoustics.
+
+# plots of % difference from truth
 
