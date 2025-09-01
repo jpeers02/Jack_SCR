@@ -88,5 +88,64 @@ acre_model.sim <- function(n_sims, D, g0, sigma,
 
 # add hazard-half normal detection function simulation - good for acoustics.
 
-# plots of % difference from truth
+sim_scr_data_multi <- function(D, g0, sigma, xlim, ylim, traps_list, n_occasions = 1) {
+
+  a_m2 <- diff(xlim) * diff(ylim)
+  a_ha <- a_m2 / 10000
+  
+  N <- rpois(1, D * a_ha)
+  
+  activity_centers <- cbind(runif(N, xlim[1], xlim[2]),
+                            runif(N, ylim[1], ylim[2]))
+  
+  capt_sessions <- vector("list", length(traps_list))
+  
+  for (s in seq_along(traps_list)) {
+    traps <- traps_list[[s]]
+    n_traps <- nrow(traps)
+    
+    capt_array <- array(0, dim = c(N, n_traps, n_occasions))
+    
+    dists <- crossdist(activity_centers[,1], activity_centers[,2],
+                       traps[,1], traps[,2])
+    
+    for (i in 1:n_occasions) {
+      p <- g0 * exp(-dists^2 / (2 * sigma^2))
+      capt_array[,,i] <- matrix(rbinom(N * n_traps, 1, p), nrow = N)
+    }
+    
+    detected <- apply(capt_array, 1, sum) > 0
+    capt_array <- capt_array[detected,,]
+    
+    capt_sessions[[s]] <- list(capt = capt_array,
+                               traps = traps,
+                               detected = sum(detected))
+  }
+  
+  list(N_total = N,
+       activity_centers = activity_centers,
+       sessions = capt_sessions)
+}
+
+sim_scr_data.hhn <- function(D, lambda0, sigma, xlim, ylim, traps) {
+  a_m2 <- diff(xlim) * diff(ylim)
+  a_ha <- a_m2 / 10000
+  N <- rpois(1, D * a_ha)
+  
+  activity_centers <- cbind(runif(N, xlim[1], xlim[2]),
+                            runif(N, ylim[1], ylim[2]))
+  
+  dists <- crossdist(activity_centers[, 1], activity_centers[, 2],
+                     traps[, 1], traps[, 2])
+  
+  lamd <- lambda0 * exp(-dists^2 / (2 * sigma^2))
+  
+  p <- 1 - exp(-lamd)
+  capt <- matrix(rbinom(length(p), 1, p), nrow = N)
+  
+  capt_filt <- capt[rowSums(capt) > 0, ]
+  list(capt = capt_filt, N = N, activity_centers = activity_centers)
+}
+
+
 
