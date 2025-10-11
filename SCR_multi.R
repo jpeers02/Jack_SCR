@@ -23,3 +23,6 @@ fit_secr
 
 
 trial.1 <- model.sim(n_sims = 50, D = 5, g0 = 0.8, sigma = 80, traps = traps_list, buffer = 400, detfn = 'hn', method = 'both', xlim = c(-900, 1200), ylim = c(-900, 1200))
+multidata1 <- trial.1$tidy
+write_csv(multidata1, 'multidatatest.csv')
+
