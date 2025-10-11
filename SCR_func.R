@@ -7,6 +7,18 @@ load("C:/Users/Jack/Downloads/test-data.RData")
 
 # add data set to github
 
+# Function to compute detection probabilities.
+
+compute_p <- function(lambda0 = NULL, g0 = NULL, dists, sigma, detfn = c('hn', 'hhn')){
+  detfn <- match.arg(detfn)
+  if(detfn == "hn"){
+    p <- g0 * exp(-dists^2 / (2 * sigma^2))
+  } else if(detfn == "hhn"){
+    lamd <- lambda0 * exp(-dists^2 / (2 * sigma^2))
+    p <- 1 - exp(-lamd)
+  }
+}
+
 traps.1 <- test.data$traps
 
 ## Simulating a single session & occasion data set
@@ -24,24 +36,58 @@ sim_scr_data <- function(D, lambda0 = NULL, g0 = NULL,
   
   dists <- crossdist(activity_centers[, 1], activity_centers[, 2],
                      traps[, 1], traps[, 2])
-  if(detfn == "hn"){
-    p <- g0 * exp(-dists^2 / (2 * sigma^2))
-  } else if(detfn == "hhn"){
-    lamd <- lambda0 * exp(-dists^2 / (2 * sigma^2))
-    p <- 1 - exp(-lamd)
-  }
   
+  p <- compute_p(dists = dists, sigma = sigma, g0 = g0, lambda0 = lambda0, detfn = detfn)
   
   capt <- matrix(rbinom(length(p), 1, p), nrow = N)
   capt_filt <- capt[rowSums(capt) > 0, ]
   list(capt = capt_filt, N = N, activity_centers = activity_centers)
 }
 
+sim_scr_data_multi <- function(D, g0=NULL, sigma, xlim, ylim, traps_list, detfn = c('hn', 'hhn'), lambda0 = NULL) {
+  
+  a_m2 <- diff(xlim) * diff(ylim)
+  a_ha <- a_m2 / 10000
+  
+  N <- rpois(1, D * a_ha)
+  
+  activity_centers <- cbind(runif(N, xlim[1], xlim[2]),
+                            runif(N, ylim[1], ylim[2]))
+  
+  capt_sessions <- vector("list", length(traps_list))
+  
+  for (s in seq_along(traps_list)) {
+    traps <- traps_list[[s]]
+    n_traps <- nrow(traps)
+    
+
+    dists <- crossdist(activity_centers[,1], activity_centers[,2],
+                       traps[,1], traps[,2])
+    
+    p <- compute_p(dists = dists, sigma = sigma, g0 = g0, lambda0 = lambda0, detfn = detfn)
+    
+    capt_mat <- matrix(rbinom(N * n_traps, 1, p), nrow = N)
+    
+    detected <- rowSums(capt_mat) > 0
+    capt_mat <- capt_mat[detected, , drop = FALSE]
+    
+    capt_sessions[[s]] <- list(capt = capt_mat,
+                               traps = traps,
+                               detected = sum(detected))
+  }
+  
+  list(N_total = N,
+       activity_centers = activity_centers,
+       sessions = capt_sessions)
+}
+
+
 ## Adapting the data set into  format required for secr and acre
 
 # Adapt to allow for multi-session
 
 sim_adapt_data <- function(D,lambda0 = NULL, g0 = NULL, sigma, xlim, ylim, traps, session_id = 1, detfn) {
+  
   
   sim <- sim_scr_data(D, lambda0, g0, sigma, xlim, ylim, traps, detfn)
   
@@ -62,6 +108,36 @@ sim_adapt_data <- function(D,lambda0 = NULL, g0 = NULL, sigma, xlim, ylim, traps
   return(list(sim_data = sim, capthist_df = capthist_df))
 }
 
+sim_adapt_data_multi <- function(D, lambda0 = NULL, g0 = NULL, sigma,
+                                 xlim, ylim, traps_list, detfn = c("hn", 'hhn')) {
+  
+  sim_multi <- sim_scr_data_multi(D = D, g0 = g0, sigma = sigma,
+                                  xlim = xlim, ylim = ylim,
+                                  traps_list = traps_list, detfn = detfn)
+  
+  all_capthist <- data.frame()
+  
+  for (s in seq_along(sim_multi$sessions)) {
+    capt <- sim_multi$sessions[[s]]$capt
+    if (nrow(capt) > 0) {
+      for (i in 1:nrow(capt)) {
+        for (j in 1:ncol(capt)) {
+          if (capt[i, j] > 0) {
+            all_capthist <- rbind(all_capthist,
+                                  data.frame(session = s,
+                                             ID = paste0("s", s, "_", i),
+                                             occasion = 1,
+                                             trap = j,
+                                             stringsAsFactors = FALSE))
+          }
+        }
+      }
+    }
+  }
+  
+  return(list(sim_data = sim_multi, capthist_df = all_capthist))
+}
+
 # Start simulating multi-session data - list of traps 
 
 # Buffer = 5 * Sigma
@@ -77,17 +153,34 @@ model.sim <- function(n_sims, D, g0 = NULL, lambda0 = NULL, sigma,
   
   for (i in 1:n_sims) {
     
-    sim_data <- sim_adapt_data(D = D, g0 = g0, lambda0 = lambda0, sigma = sigma, 
-                               xlim = xlim, ylim = ylim, traps = traps, 
-                               session_id = 1, detfn = detfn)
-    
+    if (is.data.frame(traps) || is.matrix(traps)) {
+
+      sim_data <- sim_adapt_data(D = D, g0 = g0, lambda0 = lambda0, sigma = sigma, 
+                                 xlim = xlim, ylim = ylim, traps = traps, 
+                                 session_id = 1, detfn = detfn)
+      
+      secr.traps <- as.data.frame(traps)
+      colnames(secr.traps) <- c("x", "y")
+     secr_traps <- read.traps(secr.traps, detector = 'proximity')
+      
+    } else if (is.list(traps)) {
+
+      sim_data <- sim_adapt_data_multi(D = D, g0 = g0, lambda0 = lambda0, sigma = sigma, 
+                                       xlim = xlim, ylim = ylim, traps_list = traps, 
+                                       detfn = detfn)
+
+      secr.traps <-  lapply(traps, function(df) {
+        colnames(df) <- c("x", "y")
+        read.traps(data = df, detector = "proximity")
+      })
+      secr_traps <- secr.traps
+    } else {
+      stop("traps must be either a data.frame/matrix (single session) or a list of trap arrays (multi-session).")
+    }
     sim_results <- list()
     
 
     if (method %in% c("secr", "both")) {
-      secr.traps <- as.data.frame(traps)
-      colnames(secr.traps) <- c("x", "y")
-      secr_traps <- read.traps(data = secr.traps, detector = "proximity")
       
       capthist <- sim_data$capthist_df
       capt_hist <- make.capthist(capthist, secr_traps, fmt = "trapID")
@@ -95,7 +188,17 @@ model.sim <- function(n_sims, D, g0 = NULL, lambda0 = NULL, sigma,
       mask <- make.mask(secr_traps, buffer = buffer)
       fit_secr <- secr.fit(capt_hist, mask = mask)
       
+      if(is.data.frame(traps)|| is.matrix(traps)){
       pred <- summary(fit_secr)$predicted
+    }
+      else if(is.list(traps)){
+     
+      # Without session covariate - homogenous density. 
+        
+        pred <-summary(fit_secr)$predicted$`session = 1`
+      
+      }
+      
       df_secr <- data.frame(
         method    = "secr",
         parameter = rownames(pred),
@@ -141,45 +244,10 @@ model.sim <- function(n_sims, D, g0 = NULL, lambda0 = NULL, sigma,
   return(list(tidy = all_results, results = results))
 }
 
-sim_scr_data_multi <- function(D, g0, sigma, xlim, ylim, traps_list) {
 
-  a_m2 <- diff(xlim) * diff(ylim)
-  a_ha <- a_m2 / 10000
-  
-  N <- rpois(1, D * a_ha)
-  
-  activity_centers <- cbind(runif(N, xlim[1], xlim[2]),
-                            runif(N, ylim[1], ylim[2]))
-  
-  capt_sessions <- vector("list", length(traps_list))
-  
-  for (s in seq_along(traps_list)) {
-    traps <- traps_list[[s]]
-    n_traps <- nrow(traps)
-    
-    capt_array <- array(0, dim = c(N, n_traps, n_occasions))
-    
-    dists <- crossdist(activity_centers[,1], activity_centers[,2],
-                       traps[,1], traps[,2])
-    
-      p <- g0 * exp(-dists^2 / (2 * sigma^2))
-      capt_array[,,i] <- matrix(rbinom(N * n_traps, 1, p), nrow = N)
- 
-    
-    detected <- apply(capt_array, 1, sum) > 0
-    capt_array <- capt_array[detected,,]
-    
-    capt_sessions[[s]] <- list(capt = capt_array,
-                               traps = traps,
-                               detected = sum(detected))
-  }
-  
-  list(N_total = N,
-       activity_centers = activity_centers,
-       sessions = capt_sessions)
-}
 
 # Session - statistically independent capture data 
 # Occasion - dependent - animals recognised between time & space - focus on single occasions for now.
 # Acre - single occasion.
 # Keep traps very separate to be independent. 
+# Make grid of densities - changing depending on coordinate/covariate. 
