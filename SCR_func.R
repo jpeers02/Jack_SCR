@@ -252,4 +252,5 @@ model.sim <- function(n_sims, D, g0 = NULL, lambda0 = NULL, sigma,
 # Keep traps very separate to be independent. 
 # Make grid of densities - changing depending on coordinate/covariate. 
 # Make vector of Ds dependent on sessions 
-# Make sessions have variables x, y, forest etc
+# Make sessions have variables x, y, forest etc - ^ can make the above vector dependent on covariates.
+
