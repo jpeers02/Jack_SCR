@@ -1,4 +1,3 @@
-
 library(spatstat)
 library(secr)
 library(acre)
@@ -104,10 +103,10 @@ sim_scr_data_multi <- function(D, g0 = NULL, sigma, xlim, ylim, traps_list,
 
 sim_scr_data_multi_covsession <- function(
     beta0,                       
-    beta1 = 0,                
-    cov_session = NULL,       
+    betas = c(),                
+    covs_session = NULL,  
+    alpha0, alphas = c(), 
     g0 = NULL,
-    sigma,
     xlim, ylim,
     traps_list,
     detfn = c('hn', 'hhn'),
@@ -116,13 +115,19 @@ sim_scr_data_multi_covsession <- function(
   detfn <- match.arg(detfn)
   n_sessions <- length(traps_list)
   
-  if (is.null(cov_session))
-    cov_session <- rep(0, n_sessions)
-  if (length(cov_session) != n_sessions)
-    stop("Length of cov_session must match number of sessions.")
+  # coerce to matrix so indexing is always consistent
+  if (is.null(covs_session)){
+    covs_session <- matrix(0, nrow = n_sessions, ncol = length(betas))
+  } else {
+    covs_session <- as.matrix(covs_session)
+  }
+  
+  if (nrow(covs_session) != n_sessions)
+    stop("nrow(covs_session) must match number of sessions.")
+  if (ncol(covs_session) != length(betas))
+    stop("ncol(covs_session) must match length(betas).")
   
   if (length(g0) == 1 || is.null(g0)) g0 <- rep(g0, n_sessions)
-  if (length(sigma) == 1) sigma <- rep(sigma, n_sessions)
   
   a_m2 <- diff(xlim) * diff(ylim)
   a_ha <- a_m2 / 10000
@@ -131,13 +136,17 @@ sim_scr_data_multi_covsession <- function(
   N_by_session <- integer(n_sessions)
   
   for (s in seq_len(n_sessions)) {
-
-    log_D <- beta0 + beta1 * cov_session[s]
+    log_D <- beta0 + sum(betas * covs_session[s, ])
     
     D_s <- exp(log_D)
     
+    
     N <- rpois(1, D_s * a_ha)
     N_by_session[s] <- N
+    
+    log_sigma <- alpha0 + sum(alphas * covs_session[s, ])
+    
+    sigma <- exp(log_sigma)
     
     activity_centers <- cbind(
       runif(N, xlim[1], xlim[2]),
@@ -150,7 +159,7 @@ sim_scr_data_multi_covsession <- function(
     dists <- crossdist(activity_centers[,1], activity_centers[,2],
                        traps[,1], traps[,2])
     
-    p <- compute_p(dists = dists, sigma = sigma[s],
+    p <- compute_p(dists = dists, sigma = sigma,
                    g0 = g0[s], lambda0 = lambda0, detfn = detfn)
     
     capt_mat <- matrix(rbinom(N * n_traps, 1, p), nrow = N)
@@ -163,7 +172,7 @@ sim_scr_data_multi_covsession <- function(
       detected = sum(detected),
       N_session = N,
       D_session = D_s,
-      cov_session = cov_session[s],
+      covs_session = covs_session[s, ],  # store full row
       activity_centers = activity_centers
     )
   }
@@ -174,7 +183,6 @@ sim_scr_data_multi_covsession <- function(
     sessions = capt_sessions
   )
 }
-
 # Need session covariate data frame ^
 
 ## Adapting the data set into  format required for secr and acre
@@ -203,9 +211,9 @@ sim_adapt_data <- function(D,lambda0 = NULL, g0 = NULL, sigma, xlim, ylim, traps
   return(list(sim_data = sim, capthist_df = capthist_df))
 }
 
-sim_adapt_data_multi <- function(D = NULL, lambda0 = NULL, g0 = NULL, sigma,
+sim_adapt_data_multi <- function(D = NULL, lambda0 = NULL, g0 = NULL,
                                  xlim, ylim, traps_list, detfn = c("hn", 'hhn'),
-                                 model = c('h', 'inh'), beta0 = NULL, beta1 = NULL, cov_session = NULL) {
+                                 model = c('h', 'inh'), beta0 = NULL, betas = NULL, covs_session = NULL, alpha0, alphas) {
   
   detfn <- match.arg(detfn)
   model <- match.arg(model)
@@ -221,14 +229,12 @@ sim_adapt_data_multi <- function(D = NULL, lambda0 = NULL, g0 = NULL, sigma,
   
   if (model == 'inh') {
     sim_multi <- sim_scr_data_multi_covsession(
-      beta0 = beta0, beta1 = beta1, cov_session = cov_session, g0 = g0,
-      sigma = sigma, xlim = xlim, ylim = ylim,
+      beta0 = beta0, betas = betas, covs_session = covs_session, g0 = g0, alpha0 = alpha0, alphas = alphas, 
+      xlim = xlim, ylim = ylim,
       detfn = detfn, traps_list = traps_list
     )
-    session.cov <- data.frame(
-      session = seq_along(traps_list),
-      cov = cov_session
-    )
+    session.cov <- as.data.frame(covs_session)
+    session.cov$session <- seq_along(traps_list)
   }
   
   all_capthist <- data.frame()
@@ -277,6 +283,7 @@ model.sim <- function(n_sims, D, g0 = NULL, lambda0 = NULL, sigma,
   
   method <- match.arg(method)
   results <- vector("list", n_sims)
+  
   
   for (i in 1:n_sims) {
     
@@ -371,66 +378,184 @@ model.sim <- function(n_sims, D, g0 = NULL, lambda0 = NULL, sigma,
   return(list(tidy = all_results, results = results))
 }
 
-model.sim_inh <- function(n_sims, D, beta0, g0, beta1, cov_session,
-                          lambda0, sigma, xlim, ylim, traps, buffer, detfn = c('hn', 'hhn'), 
-                          method = c('secr', 'acre', 'both')){
+model.sim_inh <- function(n_sims, beta0, g0 = NULL, betas = c(), covs_session,
+                          lambda0 = NULL, xlim, ylim, traps_list, buffer, detfn = c('hn', 'hhn'), 
+                          method = c('secr', 'acre', 'both'), stage = 1, 
+                          alpha0, alphas = c(), D_formula = NULL, sigma_formula = NULL, 
+                          ncores = NULL, spacing = NULL
+                          ){
+  
+  # Room for improvement: Recording length of each model 
+  # - 
   
   method <- match.arg(method)
   detfn <- match.arg(detfn)
   results <- vector("list", n_sims)
   
+  acre_model <- list()
+  if(!is.null(D_formula)) acre_model$D <- as.formula(paste("~", D_formula))
+  if(!is.null(sigma_formula)) acre_model$sigma <- as.formula(paste("~", sigma_formula))
+  
+  secr_model <- list()
+  if(!is.null(D_formula)) secr_model[[1]] <- as.formula(paste("D ~", D_formula))
+  if(!is.null(sigma_formula)) secr_model[[2]] <- as.formula(paste("sigma ~", sigma_formula))
+  
+  D_names <- trimws(strsplit(D_formula, "\\+")[[1]])
+  sigma_names <- trimws(strsplit(sigma_formula, "\\+")[[1]])
+  
+  if(detfn == "hn"){
+    true_vals <- c(
+      setNames(c(beta0, betas), c("D.(Intercept)", paste0("D.", D_names))),
+      setNames(c(alpha0, alphas), c("sigma.(Intercept)", paste0("sigma.", sigma_names))),
+      g0 = g0
+    )
+  } else if(detfn == "hhn"){
+    true_vals <- c(
+      setNames(c(beta0, betas), c("D.(Intercept)", paste0("D.", D_names))),
+      setNames(c(alpha0, alphas), c("sigma.(Intercept)", paste0("sigma.", sigma_names))),
+      lambda0 = lambda0
+    )
+  }
+  
   for(i in 1:n_sims){
     
-    
-    sim_data <- sim_adapt_data_multi(D = D, beta0 = beta0, lambda0 = lambda0, g0 = g0, sigma = sigma,
-                                     xlim = xlim, ylim = ylim, traps_list = traps, model = 'inh',
-                                     beta1 = beta1, cov_session = cov_session, detfn= detfn
-    )
+    sim_data <- sim_adapt_data_multi(beta0 = beta0, lambda0 = lambda0, g0 = g0, 
+                                     alpha0 = alpha0, alphas = alphas,
+                                     xlim = xlim, ylim = ylim, traps_list = traps_list, 
+                                     model = 'inh', betas = betas, 
+                                     covs_session = covs_session, detfn = detfn)
     
     captu <- sim_data$capthist_df
     sessioncov <- sim_data$session.cov
-    
-    data_acre <- read.acre(captu, traps, control.mask = list(buffer = buffer), session.cov = sessioncov)
-    fit_acre <- fit.acre(data_acre, model = list(D =~ cov))
-    coef_acre <- summary(fit_acre)$coefs
-    
-    se_acre <- summary(fit_acre)$coefs_se |> as.vector()
-    
-    df_acre <- data.frame(
-      method =  "acre",
-      parameter = names(coef_acre), 
-      estimate  = as.vector(coef_acre),
-      se        = se_acre
-    )
-    
-    df_acre <- df_acre %>%
-      mutate(
-        estimate = ifelse(parameter == "D.(Intercept)", exp(estimate), estimate)
-      )
-    
-    
-    if(detfn == "hn") {
-      true_vals <- c(g0 = g0, sigma = sigma, 'D.(Intercept)' = beta0, D.cov = beta1)
-    } else if(detfn == "hhn") {
-      true_vals <- c(lambda0 = lambda0, sigma = sigma, 'D.(Intercept)' = beta0, D.cov = beta1)
-    }    
-    
     sim_results <- list()
     
-    sim_results[["acre"]] <- df_acre
+    if(method %in% c('acre', 'both')){
+      data_acre <- read.acre(captu, traps_list, control.mask = list(buffer = buffer), 
+                             session.cov = sessioncov)
+      
+      
+      fit_acre <- fit.acre(data_acre, model = acre_model)
+      coef_acre <- summary(fit_acre)$coefs
+      se_acre <- summary(fit_acre)$coefs_se |> as.vector()
+      
+      sim_results[["acre"]] <- data.frame(
+        method    = "acre",
+        parameter = names(coef_acre), 
+        estimate  = as.vector(coef_acre),
+        se        = se_acre
+      )
+    }
     
-    results[[i]] <- bind_rows(sim_results, .id = "fit_method") %>%
+    if(method %in% c('secr', 'both')){
+      secr.traps <- lapply(traps_list, function(df) {
+        colnames(df) <- c("x", "y")
+        read.traps(data = df, detector = "proximity")
+      })
+      
+      capt_hist <- make.capthist(sim_data$capthist_df, secr.traps, 
+                                 fmt = "trapID")
+      mask <- make.mask(secr.traps, buffer = buffer, spacing = spacing)
+      
+      if(stage %in% c(1, 3)){
+       secr_time <- system.time( {fit_secr <- secr.fit(capt_hist, mask = mask, model = secr_model,
+                             sessioncov = as.data.frame(covs_session), ncores = 
+                               ncores) })["elapsed"]
+
+       
+        coef_secr <- summary(fit_secr)$coef
+        param_names_secr <- rownames(coef_secr)
+        param_names_secr <- gsub("^g0$", "g0", param_names_secr)
+        param_names_secr <- gsub("^sigma$", "sigma.(Intercept)", param_names_secr)
+        param_names_secr <- gsub("^D$", "D.(Intercept)", param_names_secr)
+        
+        sim_results[["secr_joint"]] <- data.frame(
+          method    = "secr_joint",
+          parameter = param_names_secr,
+          estimate  = coef_secr[, "beta"],
+          se        = coef_secr[, "SE.beta"]
+        )  %>% 
+          mutate(
+            time = as.numeric(secr_time),
+            estimate = ifelse(parameter == "g0", plogis(estimate), estimate)
+          )
+
+      }
+      
+      if(stage %in% c(2, 3)){
+        esa_s <- numeric(length(traps_list))
+        
+        
+        secr_joint_time <- system.time({fit_secr2 <- secr.fit(capt_hist, mask = mask, model = secr_model,
+                              sessioncov = as.data.frame(covs_session), 
+                              CL = TRUE, ncores = ncores)
+        
+        for(j in seq_along(traps_list)){
+          esa_s[j] <- esa(fit_secr2, sessnum = j)[1]
+        }
+        
+        n <- sapply(fit_secr2$capthist, function(x) dim(x)[1])
+        sessioncov$n <- n
+        glm_form <- as.formula(paste("n ~", D_formula))
+        glm2 <- glm(glm_form, offset = log(esa_s), family = poisson, data = sessioncov)
+        
+        })['elapsed']
+        
+        
+        
+        glm_coefs <- coef(glm2)
+        glm_ses <- sqrt(diag(vcov(glm2)))
+        
+        
+        param_names_glm <- ifelse(
+          names(glm_coefs) == "(Intercept)",
+          "D.(Intercept)",
+          paste0("D.", names(glm_coefs))
+        )
+        
+        
+        coef_secr2 <- summary(fit_secr2)$coef
+        param_names_secr2 <- rownames(coef_secr2)
+        param_names_secr2 <- gsub("^g0$", "g0", param_names_secr2)
+        param_names_secr2 <- gsub("^sigma$", "sigma.(Intercept)", param_names_secr2)
+        param_names_secr2 <- gsub("^sigma\\.", "sigma.", param_names_secr2)
+        
+        keep_detection <- grepl("^g0|^sigma", param_names_secr2)
+        coef_secr2_det <- coef_secr2[keep_detection, ]
+        
+        df_detection <- data.frame(
+          method    = "secr_glm",
+          parameter = param_names_secr2[keep_detection],
+          estimate  = coef_secr2_det[, "beta"],
+          se        = coef_secr2_det[, "SE.beta"]
+        ) %>%
+          mutate(estimate = ifelse(parameter == "g0", plogis(estimate), estimate))
+        
+        
+        df_glm_D <- data.frame(
+          method    = "secr_glm",
+          parameter = param_names_glm,
+          estimate  = as.vector(glm_coefs),
+          se        = glm_ses
+        )
+        
+        sim_results[["secr_glm"]] <- rbind(df_detection, df_glm_D) %>%
+          mutate(time = as.numeric(secr_joint_time))
+      }
+    }
+    
+    results[[i]] <- bind_rows(sim_results) %>%
       mutate(sim = i,
              true = true_vals[parameter],
-             pct_diff = 100 * ((estimate - true)/true))
-    
+             pct_diff = 100 * ((estimate - true) / true))
   }
   
   all_results <- bind_rows(results)
+  rownames(all_results) <- 1:nrow(all_results)
+
   
   return(list(tidy = all_results, results = results))
-  
 }
+
 
 
 # Session - statistically independent capture data 
