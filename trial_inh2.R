@@ -20,8 +20,8 @@ fit_acre <- fit.acre(data_acre, model = list(D =~ cov))
 
 fit_acre$coefficients
 trial1 <- model.sim_inh(5, D0 = 1, beta1 = 3, cov_session = cov_ses, g0 = 0.8, sigma = 80,
-              xlim = c(-900, 1200), ylim = c(-900, 1200), detfn = 'hn', traps = traps_list, buffer = 400, method = 'acre')
-trial1
+              xlim = c(-900, 1200), 
+              ylim = c(-900, 1200), detfn = 'hn', traps = traps_list, buffer = 400, method = 'acre')
 
 fit2 <- fit.acre(data_acre)
 esas = fit2$coefficients[substr(names(fit2$coefficients), 1, 3) == 'esa']
@@ -31,9 +31,8 @@ n = sapply(data_acre$capt, function(x) nrow(x$bincapt))
 covs = sessioncov$cov
 trialglm = glm(n ~ covs, offset = log(esas), family = poisson)
 summary(trialglm)
-covs
 
 # Changing over space 
 # Simulate a gaussian field 
-
+traps_list
 

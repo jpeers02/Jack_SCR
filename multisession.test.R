@@ -1,8 +1,6 @@
 
 source("~/SCR_func.R")
 
-
-
 offsets <- expand.grid(dx = c(-700, 0, 700),
                        dy = c(-700, 0, 700))
 
@@ -27,3 +25,6 @@ for (i in seq_along(traps_list)) {
 legend("topright", legend = paste("Block", 1:9),
        col = colors, pch = 19)
 
+traps_list
+
+length(traps_list)
