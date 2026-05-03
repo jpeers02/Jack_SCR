@@ -3,7 +3,9 @@ library(secr)
 library(acre)
 library(tidyverse)
 load("C:/Users/Jack/Downloads/test-data.RData")
-
+f <- function(pars, sessnum){
+  log(esa(test.fit.secr.cl, sessnum = sessnum, beta = pars)[1])
+}
 # add data set to github
 
 # Function to compute detection probabilities.
@@ -382,7 +384,7 @@ model.sim_inh <- function(n_sims, beta0, g0 = NULL, betas = c(), covs_session,
                           lambda0 = NULL, xlim, ylim, traps_list, buffer, detfn = c('hn', 'hhn'), 
                           method = c('secr', 'acre', 'both'), stage = 1, 
                           alpha0, alphas = c(), D_formula = NULL, sigma_formula = NULL, 
-                          ncores = NULL, spacing = NULL
+                          ncores = NULL, spacing = NULL, varprop = FALSE
                           ){
   
   # Room for improvement: Recording length of each model 
@@ -399,6 +401,10 @@ model.sim_inh <- function(n_sims, beta0, g0 = NULL, betas = c(), covs_session,
   secr_model <- list()
   if(!is.null(D_formula)) secr_model[[1]] <- as.formula(paste("D ~", D_formula))
   if(!is.null(sigma_formula)) secr_model[[2]] <- as.formula(paste("sigma ~", sigma_formula))
+  
+  secr_model_2 <- list()
+  if(!is.null(sigma_formula)) secr_model_2[[1]] <- as.formula(paste("sigma ~", sigma_formula))
+  
   
   D_names <- trimws(strsplit(D_formula, "\\+")[[1]])
   sigma_names <- trimws(strsplit(sigma_formula, "\\+")[[1]])
@@ -427,6 +433,7 @@ model.sim_inh <- function(n_sims, beta0, g0 = NULL, betas = c(), covs_session,
     
     captu <- sim_data$capthist_df
     sessioncov <- sim_data$session.cov
+    colnames(sessioncov)[1:ncol(covs_session)] <- colnames(covs_session)
     sim_results <- list()
     
     if(method %in% c('acre', 'both')){
@@ -485,7 +492,7 @@ model.sim_inh <- function(n_sims, beta0, g0 = NULL, betas = c(), covs_session,
         esa_s <- numeric(length(traps_list))
         
         
-        secr_joint_time <- system.time({fit_secr2 <- secr.fit(capt_hist, mask = mask, model = secr_model,
+        stage1_time <- system.time({fit_secr2 <- secr.fit(capt_hist, mask = mask, model = secr_model_2,
                               sessioncov = as.data.frame(covs_session), 
                               CL = TRUE, ncores = ncores)
         
@@ -494,13 +501,16 @@ model.sim_inh <- function(n_sims, beta0, g0 = NULL, betas = c(), covs_session,
         }
         
         n <- sapply(fit_secr2$capthist, function(x) dim(x)[1])
-        sessioncov$n <- n
-        glm_form <- as.formula(paste("n ~", D_formula))
-        glm2 <- glm(glm_form, offset = log(esa_s), family = poisson, data = sessioncov)
+        sessioncov$n <- n})['elapsed']
         
+        glm_time <- system.time({
+          df_glm <- as.data.frame(covs_session)
+          df_glm$n <- n
+          glm_form <- as.formula(paste("n ~", D_formula))
+          glm2 <- glm(glm_form, offset = log(esa_s), family = poisson, data = df_glm)
         })['elapsed']
         
-        
+        secr_joint_time <- stage1_time + glm_time 
         
         glm_coefs <- coef(glm2)
         glm_ses <- sqrt(diag(vcov(glm2)))
@@ -540,6 +550,75 @@ model.sim_inh <- function(n_sims, beta0, g0 = NULL, betas = c(), covs_session,
         
         sim_results[["secr_glm"]] <- rbind(df_detection, df_glm_D) %>%
           mutate(time = as.numeric(secr_joint_time))
+        
+        if(varprop == TRUE){
+          time_varprop <- system.time({
+        `%||%` <- function(x, y) if (!is.null(x)) x else y
+        
+        n_sessions <- length(traps_list)
+        n_pars <- length(coef(fit_secr2)[, 1])
+        
+        f <- function(pars, sessnum){
+          log(esa(fit_secr2, sessnum = sessnum, beta = pars)[1])
+        }
+        
+        Z <- t(sapply(seq_len(n_sessions), function(s){
+          grad(f, coef(fit_secr2)[, 1], sessnum = s)
+        }))
+        
+       
+        
+        v.theta <- vcov(fit_secr2)
+        
+        # transform to glmmTMB format
+        v.log.sd <- log(sqrt(diag(v.theta)))
+        v.cor <- cov2cor(v.theta)[lower.tri(v.theta)]
+        v.pars <- c(v.log.sd, put_cor(v.cor, input_val = "vec"))
+        
+        z_terms <- paste0("z", 1:n_pars, collapse = " + ")
+        formula_str <- paste("n ~", D_formula, "+ us(0 +", z_terms, "| dummy)")
+        
+        df_glmm <- data.frame(
+          n = n,
+          as.data.frame(covs_session),
+          Z,
+          dummy = factor(1)
+        )
+        n_covs <- sum(!colnames(sessioncov) %in% c("session", "n"))
+        names(df_glmm)[(n_covs + 2):(n_covs + 1 + n_pars)] <- paste0("z", 1:n_pars)
+        
+        fit_varprop <- glmmTMB(
+          as.formula(formula_str),
+          offset = log(esa_s),
+          start = list(theta = v.pars),
+          map = list(theta = factor(rep(NA, length(v.pars)))),
+          family = "poisson",
+          data = df_glmm
+        )
+          })['elapsed']
+            
+            time_varprop_2stage <- stage1_time + time_varprop
+        
+        varprop_coefs <- fixef(fit_varprop)$cond
+        varprop_ses <- sqrt(diag(vcov(fit_varprop)$cond))
+        
+        param_names_varprop <- ifelse(
+          names(varprop_coefs) == "(Intercept)",
+          "D.(Intercept)",
+          paste0("D.", names(varprop_coefs))
+        )
+        
+        df_varprop_D <- data.frame(
+          method    = "secr_varprop",
+          parameter = param_names_varprop,
+          estimate  = as.vector(varprop_coefs),
+          se        = varprop_ses
+        )
+        
+        df_detection_varprop <- df_detection %>% mutate(method = "secr_varprop")
+        sim_results[["secr_varprop"]] <- rbind(df_detection_varprop, df_varprop_D) %>%
+          mutate(time = as.numeric(time_varprop_2stage))
+        }
       }
     }
     
