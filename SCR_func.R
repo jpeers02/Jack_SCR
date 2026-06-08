@@ -550,7 +550,7 @@ model.sim_inh <- function(n_sims, beta0 = NULL, g0 = NULL, betas = c(), covs_ses
                           method = c('secr', 'acre', 'both'), stage = 1, 
                           alpha0, alphas = c(), D_formula = NULL, sigma_formula = NULL, 
                           ncores = NULL, spacing = NULL, varprop = FALSE, sigma_u = NULL, fitted = FALSE,
-                          D_session = NULL
+                          D_session = NULL, REML = FALSE
 ){
   
   # Room for improvement: Recording length of each model 
@@ -651,32 +651,37 @@ model.sim_inh <- function(n_sims, beta0 = NULL, g0 = NULL, betas = c(), covs_ses
       mask <- make.mask(secr.traps, buffer = buffer, spacing = spacing)
       
       if(stage %in% c(1, 3)){
-        secr_time <- system.time( {fit_secr <- secr.fit(capt_hist, mask = mask, model = secr_model,
-                                                        sessioncov = as.data.frame(covs_session), ncores = 
-                                                          ncores) })["elapsed"]
-        
-        
-        coef_secr <- summary(fit_secr)$coef
-        param_names_secr <- rownames(coef_secr)
-        param_names_secr <- gsub("^g0$", "g0", param_names_secr)
-        param_names_secr <- gsub("^sigma$", "sigma.(Intercept)", param_names_secr)
-        param_names_secr <- gsub("^D$", "D.(Intercept)", param_names_secr)
-        
-        df_secr_joint <- data.frame(
-          method    = "secr_joint",
-          parameter = param_names_secr,
-          estimate  = coef_secr[, "beta"],
-          se        = coef_secr[, "SE.beta"],
-          time      = as.numeric(secr_time)
-        )
-        df_secr_joint$estimate <- ifelse(df_secr_joint$parameter == "g0",
-                                         plogis(df_secr_joint$estimate),
-                                         df_secr_joint$estimate)
-        sim_results[["secr_joint"]] <- df_secr_joint
-        
+        tryCatch({
+          secr_time <- system.time( {fit_secr <- secr.fit(capt_hist, mask = mask, model = secr_model,
+                                                          sessioncov = as.data.frame(covs_session), ncores = 
+                                                            ncores) })["elapsed"]
+          
+          coef_secr <- summary(fit_secr)$coef
+          param_names_secr <- rownames(coef_secr)
+          param_names_secr <- gsub("^g0$", "g0", param_names_secr)
+          param_names_secr <- gsub("^sigma$", "sigma.(Intercept)", param_names_secr)
+          param_names_secr <- gsub("^D$", "D.(Intercept)", param_names_secr)
+          
+          df_secr_joint <- data.frame(
+            method    = "secr_joint",
+            parameter = param_names_secr,
+            estimate  = coef_secr[, "beta"],
+            se        = coef_secr[, "SE.beta"],
+            time      = as.numeric(secr_time)
+          )
+          df_secr_joint$estimate <- ifelse(df_secr_joint$parameter == "g0",
+                                           plogis(df_secr_joint$estimate),
+                                           df_secr_joint$estimate)
+          sim_results[["secr_joint"]] <- df_secr_joint
+          
+        }, error = function(e) {
+          cat("Stage 1 failed:", e$message, "\n")
+          # skip this sim, continue to next
+        })
       }
       
       if(stage %in% c(2, 3)){
+        
         esa_s <- numeric(length(traps_list))
         
         
@@ -742,7 +747,7 @@ model.sim_inh <- function(n_sims, beta0 = NULL, g0 = NULL, betas = c(), covs_ses
         if(varprop == TRUE){
           time_varprop <- system.time({
             fit_varprop_result <- density_fit(fit_secr2, D_formula, 
-                                              covs_session, traps_list)
+                                              covs_session, traps_list, REML = REML)
           })["elapsed"]
           
           fit_varprop <- fit_varprop_result$fit
