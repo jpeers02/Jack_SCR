@@ -1,0 +1,383 @@
+---
+title: "Fast & Flexible Density Surface Modelling for Spatial Capture - Recapture"
+author: "Jack Peers"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 3
+    number_sections: true
+mainfont: "Times New Roman"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(bookdown)
+# source('SCR_func.R')
+```
+
+\section{Acknowledgements}
+
+I'd first of all like to thank my family and partner for their continued support over the last year.
+
+I'd like to thank my supervisor for his great ideas and supervision, as well as my co-supervisor Dave Miller for his help on the more theoretical sides of this project.
+
+Also many thanks to the Sustainability Network for help with living costs during my honours year.
+
+\tableofcontents
+\newpage{}
+
+\section{Introduction}
+
+\subsection{Capture Recapture}
+
+Estimating animal populations has remained a challenging task for many years, a task which is particularly vital for conservation management. For over a century, statisticians and ecologists have been tasked with mapping the density of different animal species. One persistent methodology that has existed since 1896 is capture - recapture where animals are captured, marked and then released back into the study area. Animals encountered across multiple occasions allow us to estimate how many were never seen, being able to infer the total population size. 'Trapping' an animal need not harm the animal, for instance one use acoustic detectors (Marques et al., 2013) or camera traps (Siren et al., 2024).
+
+However, those methods assumed that animal density was homogenous across the study area, meaning animals were equally likely to be found anywhere within it. In reality, animals tend to concentrate in areas of favourable habitat, avoiding others. This limitation motivated the development of Spatial Capture-Recapture (SCR) methods in the 21st century, beginning with Efford (2004), which explicitly model the spatial distribution of density. These are particularly useful as researchers, conservation managers and more can infer not only the number of animals in a study area, but also where these animals are located. SCR is particularly valuable for conservation, managers can infer not only how many animals exist in a study area, but where they are located. For endangered species, this spatial information can be critical for targeted intervention such as captive breeding programmes.
+
+\subsection{Spatial Capture - Recapture}
+
+In SCR, each animal is assumed to have a fixed activity centre drawn from a Poisson point process with intensity function D(x), representing the density of animals at location x. Detection probability decreases with distance from the activity centre to the trap, typically modelled via a half-normal detection function:
+
+$$p_{ij} = g_0 \exp\left(-\frac{d_{ij}^2}{2\sigma^2}\right)$$
+
+where $g_0$ is the baseline detection probability, $\sigma$ controls the spatial scale of detection, and $d_{ij}$ is the distance between animal $i$ and trap $j$.
+
+Figure 1 plots the half-normal detection function, illustrating how detection probability decreases with distance from the activity centre, and the effect of varying $\sigma$ on the spatial scale of detection.
+
+```{r, fig.cap="Half-normal detection function for varying values of sigma", echo = FALSE, warning = FALSE}
+
+# distance range
+d <- seq(0, 300, length.out = 200)
+
+# different sigma values
+df_det <- data.frame(
+  d = rep(d, 3),
+  p = c(0.8 * exp(-d^2 / (2 * 50^2)),
+        0.8 * exp(-d^2 / (2 * 100^2)),
+        0.8 * exp(-d^2 / (2 * 150^2))),
+  sigma = rep(c("σ = 50m", "σ = 100m", "σ = 150m"), each = 200)
+)
+
+ggplot(df_det, aes(x = d, y = p, colour = sigma)) +
+  geom_line(linewidth = 1.2) +
+  labs(
+       x = "Distance from activity centre (m)",
+       y = "Detection probability",
+       colour = "") +
+  theme_minimal(base_family = "Times New Roman")
+
+```
+
+***Legend is ORDERED WRONG***
+
+For each animal $i$ at detector $j$, the capture history follows a Bernoulli distribution:
+
+$$\omega_{ij} | s_i \sim \text{Bernoulli}(p_{ij}(s_i))$$
+
+where $s_i$ is the activity centre of animal $i$. The probability of animal $i$ being detected at least once across all $J$ detectors is then:
+
+$$p^*(s_i) = 1 - \prod_{j=1}^{J}(1 - p_{ij}(s_i))$$
+
+The number of detected activity centres follows a Poisson distribution:
+
+$$N \sim \text{Poisson}(D \times \text{ESA})$$
+
+where the Effective Sampling Area (ESA) represents the area that is effectively surveyed given the detection parameters:
+
+$$\text{ESA} = \int_{\mathcal{R}} p^*(s') \, ds'$$
+
+SCR models can be inhomogenous or homogenous, meaning the expected density either changes over space or doesn't. The density surface can be modelled as a log-linear function of spatial covariates:
+
+$$\log(D(\mathbf{x})) = \beta_0 + \sum_{k} \beta_k z_k(\mathbf{x})$$
+
+\subsection{Motivation}
+
+Current SCR models have a few limitations, such as being computationally expensive and somewhat inflexible to modern statistical methods. At the moment, these models are fit using an 'all-in-one' approach where detection probability and animal density parameters are found through numerical optimisation across the full likelihood. This can be quite computationally expensive, particularly for large data sets with many covariates. For instance R packages such as acre and secr can take days if not longer to fit one model, meaning modelling pipelines can take excessive amounts of time.
+
+Additionally, the joint likelihood approach limits flexibility, extending the density model to nonlinear or mixed effects models requires modifying the SCR likelihood itself, which is non-trivial. For instance, Stevenson et al. (2021) experimented with random effects models for individual animals, assessed using a simulation study which in total took approximately 3 years of computing time. This is particularly relevant as all SCR models assume animal studies form a Poisson Point Process (PPP), so when there is under/overdispersion we'd require methods to account for that.
+
+Additionally, in the current available literature fitting penalized splines in SCR is not possible using existing software packages such as \texttt{secr} or \texttt{acre}. Penalized splines are typically simply better than unpenalized splines as they automatically solve the smoothness estimation problem, being able to balance complexity and non-linearity without overfitting.
+
+This dissertation introduces a two-stage approach addressing both limitations by separating detection estimation from density modelling, allowing stage two to leverage the full modern regression toolkit. Existing software will be used to model detection probabilities which will be carried over into modelling animal densities. This project in particular assesses performance of generalised additive models using \texttt{mgcv} and mixed effects models using \texttt{glmmTMB}.
+
+\subsection{All-in-One Approach}
+
+A couple popular packages for fitting SCR models are \texttt{acre} and \texttt{secr} as mentioned, both developed in Aotearoa. They model both the probability of detecting an animal and the density of animals 'all-in-one'. This is arguably the most statistically 'principled' method of doing things as all our parameter estimates are simultaneously obtained from the data, meaning uncertainty within each estimate is naturally propagated throughout the model fitting process.
+
+\subsection{Likelihood}
+
+The full likelihood for SCR combines the distribution of activity centres with the detection process. For $n$ detected individuals with capture histories $\boldsymbol{\omega} = \{\omega_{ij}\}$, the full likelihood is:
+
+$$\mathcal{L}(\boldsymbol{\theta}) = e^{-D \cdot \text{ESA}(\boldsymbol{\theta})} 
+\prod_{i=1}^{n} \int_{\mathcal{R}} D(\mathbf{x}) 
+\prod_{j=1}^{J} p_{ij}(\mathbf{x}, \boldsymbol{\theta})^{\omega_{ij}} 
+(1 - p_{ij}(\mathbf{x}, \boldsymbol{\theta}))^{1 - \omega_{ij}} \, d\mathbf{x}$$
+
+where $\boldsymbol{\theta} = (g_0, \sigma)$ are the detection parameters, $D(\mathbf{x})$ is the density surface, and the integral marginalises over the unknown activity centre location $\mathbf{x}$ of each detected individual.
+
+In practice, secr evaluates the integral over activity centre locations \mathcal{R} R by discretizing it as a sum over a fine spatial grid (the mask). The likelihood is then maximized algorithmically with respect to \boldsymbol{\theta} and the density surface parameters. The ESA term arises as a normalising constant from marginalising over undetected individuals.
+
+\subsection{Simulated Example}
+
+We can simulate activity centres from a poisson point process and the detection process. For this example $g_0$ will be set to 0.8 where $\sigma_s$ and $D(x)$ are allowed to vary across space. Here we can set both parameters to depend on x and y coordinates, these being used as substitute for a continuous spatial covariate i.e. elevation or distance from village. We use \texttt{set.seed(506)} to ensure that our results in this simulation are reproducible.
+
+```{r, message = FALSE, echo = FALSE, warning = FALSE}
+set.seed(506)
+test.df <- sim_adapt_data_multi_2(xlim = c(-1700, 2800), ylim = c(-1700, 2800), g0 = 0.8, alpha0 = 4.05, alphas = c(-0.23, -0.23), betas = c(0.5, 0.5),beta0 = log(3), traps_list = traps_list_36, covs_session =  covs_session_36, detfn = 'hn', model = 'inh')
+
+```
+
+Where our capture histories look like:
+
+```{r, background = 'white', echo = FALSE}
+test.df$capthist_df |> head()
+```
+
+And fit an 'all-in-one model' using \texttt{secr}.
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+
+cap <- test.df$capthist_df 
+
+secr.traps <- lapply(traps_list_36, function(df) {
+  colnames(df) <- c("x", "y")
+  read.traps(data = df, detector = "proximity")
+})
+capt <- make.capthist(cap, secr.traps, fmt = 'trapID')
+mask <- make.mask(secr.traps, buffer = 500)
+fit.test <- secr.fit(capt, model = list(D ~ x.s + y.s, sigma ~ x.s + y.s), mask = mask, sessioncov = test.df$session.cov)
+
+xtable(summary(fit.test)$coef)
+```
+
+\texttt{secr} has done a fine job in this simulation, returning values very close to the truth. The package has other useful functions such as being able to plot various objects using \texttt{plot()}. For example we can plot our model below.
+
+```{r, echo = FALSE}
+
+plot(fit.test)
+
+```
+
+This visualizes how detection probability decays with distance from each trap, illustrating spatial variation in detectability across the 36 sessions.
+
+\section{Chapter 2: Two-Stage Approach}
+
+Here we introduce the two-stage method, where we can leverage existing software such as \texttt{acre} and \texttt{secr} to model the probability of detection first. To do this we model using the conditional likelihood by setting \texttt{CL = TRUE} in both packages.
+
+The conditional likelihood conditions on each animal being detected at least once, separating the detection parameters from density:
+
+$$\mathcal{L}_C(\boldsymbol{\theta} \mid \text{detected}) = 
+\prod_{i=1}^{n} \frac{\int_{\mathcal{R}} 
+\prod_{j=1}^{J} p_{ij}(\mathbf{x}, \boldsymbol{\theta})^{\omega_{ij}} 
+(1 - p_{ij}(\mathbf{x}, \boldsymbol{\theta}))^{1 - \omega_{ij}} \, d\mathbf{x}}
+{p^*(\boldsymbol{\theta})}$$
+
+where $p^*(\boldsymbol{\theta}) = \int_{\mathcal{R}} p^*({\mathbf{x}}, \boldsymbol{\theta}) \, d\mathbf{x}$ is the overall probability of detection, and \$p\^\*(\mathbf{x}, \boldsymbol{\theta}) \$ is the probability of at least one detector detecting an animal. We can then model $n_s$ (the number of detected animals in each session) instead of density directly by using the ESA of each session as an offset in a generalised linear model for example.
+
+We are then modelling:
+
+\$\$
+
+\log(\text{E}(n_i)) = \beta\_0 + \cdots + \log(\text{ESA})
+
+\$\$
+
+This methodology has it's limitations, for instance it cannot capture variance between sessions and in this case we are treating our ESA estimates as data, meaning the uncertainty surrounding our ESA estimates is not properly propagated into our second stage model. This may mean standard errors of our $\beta$ parameters are likely going to be deflated. By proxy, any confidence intervals or inference surrounding uncertainty quantification using our models is thus innacurate. We aim to solve this issue via variance propagation.
+
+\subsection{Variance Propagation}
+
+Various methods for variance propagation were considered such as the delta method, bootstrapping and the sandwich estimator. The delta method was chosen as the most fitting as bootstrapping and the sandwich estimator will increase the time taken to fit models, defeating the purpose of the project. We propose applying the delta method by using \texttt{glmmTMB} and adding the fixed effect $\kappa_s$ to the second stage model.
+
+We use $$\text{Var}(\log \widehat{\text{ESA}}_s) \approx 
+\mathbf{z}_s^\top \mathbf{V}_{\hat{\boldsymbol{\theta}}} \mathbf{z}_s$$
+
+Where $\mathbf{z}_s$ is the gradient of log-ESA with respect to detection parameters: $$\mathbf{z}_s = \nabla_{\boldsymbol{\theta}} \log \text{ESA}_s(\boldsymbol{\theta})$$
+
+The second stage model is then:\
+$$n_s \sim \text{Poisson}\left(\text{ESA}_s \cdot D_s \cdot e^{\kappa_s}\right)$$
+
+where the coefficients $\boldsymbol{\kappa}$ follow a multivariate normal distribution: $$\boldsymbol{\kappa} \sim \text{MVN}\left(\mathbf{0},\ 
+\mathbf{Z}\mathbf{V}_{\hat{\boldsymbol{\theta}}}\mathbf{Z}^\top\right)$$
+
+This should theoretically make sure that uncertainty within our ESA estimates are properly accounted for in our second stage.
+
+\section{Results}
+
+\subsection{Simulation Study Design}
+
+We want to design a simulation study where we are able to compare the naive generalised linear model, a traditional 'all-in-one' approach using \texttt{secr} or \texttt{acre} and our mixed effects model with variance propagation. We can set our $g_0$ parameter as fixed and simulate poisson point processes where $D_s$ and/or $\sigma_s$ are changing over space. From here we can model each individually simulated dataset using each different approach, then being able to return the time taken to fit each model, any coefficient estimates and the standard errors of said coefficients. Where relevant we can also record fitted density values and their corresponding standard errors. From these values we can assess whether each model is returning similar estimates, whether the two-stage approach is really faster, how much faster and whether the variance propagation is working as intended. The latter can be assessed by computing the proportion of simulations where the estimated confidence intervals contain the true value. Functions such as \texttt{model.sim_inh} and \texttt{density_fit} were developed purposefully to conduct simulate studies.
+
+\subsection{Basic Models}
+
+For the following simulation study a 6x6 array of sessions with a 3x3 trap array each is used with x and y limits of (-1700, 2800).
+
+```{r, echo = FALSE, warning = FALSE}
+
+# source('writing_stuff.R')
+# Combine all traps into one dataframe
+all_traps <- do.call(rbind, lapply(1:36, function(i) {
+  data.frame(
+    session = i,
+    x = traps_list_36[[i]]$x,
+    y = traps_list_36[[i]]$y,
+    trap_num = 1:9
+  )
+}))
+
+# Plot all traps
+ggplot(all_traps, aes(x = x, y = y)) +
+  geom_point(aes(color = factor(session)), size = 2, alpha = 0.7) +
+  theme_minimal() +
+  coord_equal() +
+  labs(x = "X (m)", y = "Y (m)",
+       title = "Study Area: 36 Sessions with 9 Traps Each",
+       color = "Session") +
+  theme(legend.position = "none") + 
+  lims(x = c(-1700, 2800), y = c(-1700, 2800))
+```
+
+The goal of this study is to confirm that our method can at least match that of standard approaches.
+
+So for this simulation, $g_0$ is set to 0.8, while both our sigma and density values are able to vary based on the scaled x value of the central trap within each session.
+
+Our model: $$\log(\text{E}(n_s)) = \beta_0 + \beta_1 x_{1s}+ \log(\text{ESA}_s)$$
+
+Where
+
+$$\log(\sigma_s) = \alpha_0 + \alpha_1 x_{1s}$$
+
+Where our true parameter values are set to:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\hline
+Parameter & Description & True Value \\
+\hline
+$\beta_0$ & Density intercept & $\log(3) = 1.10$ \\
+$\beta_1$ & Density slope (x.s) & $0.5$ \\
+$\alpha_0$ & Detection range intercept & $4.05$ \\
+$\alpha_1$ & Detection range slope (x.s) & $-0.23$ \\
+$g_0$ & Baseline detection probability & $0.8$ \\
+\hline
+\end{tabular}
+\caption{True parameter values for basic models simulation. Note: $\sigma = \exp(\alpha_0) \approx 57$ m.}
+\end{table}
+
+```{r, echo = FALSE}
+
+covs.table <-covs_session_36.x[1:10, drop = FALSE]
+xtable(covs_session_36.x)
+
+```
+
+First we will look at how well the parameters are estimated by each model.
+
+```{r, warning = FALSE, echo = FALSE}
+p_estimates
+```
+
+So as we can see both second stage models GLM and LMM retrieve extremely close estimates to the All-In-One model. These estimates are largely centered around the true value and the variance is very similar amongst methods. Then we can see how well our standard errors are estimated.
+
+```{r, echo = FALSE}
+p_coverage
+```
+
+```{r, echo = FALSE}
+xtable(coverage_data)
+```
+
+Plot shows the proportion of iterations where the confidence intervals contained the true value, as appears the All-In-One model performs well and returns the true value 95% of the time as intended. As anticipated, our naive model on the other hand underestimates standard errors majorly, while the mixed effects model mends the issue and returns accurate coverage.
+
+```{r, echo = FALSE}
+p_timing
+```
+
+Despite a few outliers where the two stage approach took approximately 200s or longer, both the GLM and LMM are on average approximately twice as fast as the all-in-one model.
+
+```{r, echo = FALSE}
+xtable(tbl_time)
+```
+
+So to conclude, at the very least our model, in the multi-session case, can match \texttt{secr} when it comes to estimation and standard error coverage while cutting computational time in half.
+
+\subsection{Mixed Effects Models}
+
+We can now explore areas where a two stage approach may perform better using capabilities \texttt{secr} and \texttt{acre} don't currently allow for. One example of that is a mixed effects model; as we are using \texttt{glmmTMB} for our second stage model adding one or more random effects to our model is fairly trivial. Current standard methods cannot account for over or under-dispersion as they assume everything is Poisson distributed, which particularly ecologically is a lofty assumption.
+
+For a random intercept model, we specify:
+
+$$\log(\text{E}(n_s)) = \beta_0 + \beta_1 x_{1s} + u_s + \log(\text{ESA}_s)$$
+
+where $u_s \sim N(0, \sigma_u^2)$ is the random intercept for each session $s$, capturing extra-Poisson variation. This allows the model to accommodate overdispersion while maintaining proper uncertainty quantification through variance propagation. In this case $\sigma_u$ is set to 0.5, providing quite a large amount of overdispersion.
+
+In this study, instead of $\sigma_s$ varying over space it is kept constant across all individual sessions at `r round(log(75), 3)`. Our $\beta$ parameters at set equal to what they were in the previous simulation study.
+
+```{r, warning = FALSE}
+p_est
+```
+
+Contrary to our previous case, now it appears our $\beta$ coeffiecient estimates in \textit{both} our All-in-One model in \texttt{secr} and our simple GLM are somewhat biased, particularly the intercept. The all-in-one model and GLM appear to absorb session-level variation into the global intercept, whereas the mixed effects model correctly partitions this variation into the random effect term. The true value is not even within the interquartile range for either the GLM nor the All-In-One model. For the $\beta_1$ estimates GLM and 'All-In-One' are doing a better job, the mean being close to the truth. The mixed effects model is not particularly much more accurate though the variance appears to be smaller than the other two models.
+
+```{r, warning = FALSE}
+p_cov
+```
+
+Here our mixed effects model truly proves it's value, both the all-in-one model and the GLM massively underestimate the standard errors of the parameters. This is a striking result: standard methods achieve only 20–30% coverage when overdispersion is present, while the mixed effects model with variance propagation restores nominal 95% coverage across all parameters and fitted densities This also means it is likely returning the $\sigma_u$ parameter particularly well.
+
+```{r, warning = FALSE, echo = FALSE, background = 'white'}
+p_sigma_u
+
+df %>%
+  filter(parameter == 'sigma_u') %>% select(estimate) %>% summary()
+```
+
+Our $\sigma_u$ estimates have both a mean and particularly median very close to the true value of $0.5$. This confirms that the mixed effects approach not only corrects uncertainty quantification but also accurately estimates the magnitude of overdispersion.
+
+```{r, echo = FALSE, warning = FALSE}
+p_time
+
+df %>% mutate(Method = method) %>%
+  group_by(Method) %>% 
+  summarise(`Mean Fitting Time (s)` = mean(time)) %>% xtable()
+```
+
+In addition, our GLM and LMM are both even faster than our second stage model compared to our first simulation study. Both are approximately `r round(89/36, 3)` times faster.
+
+\subsection{Generalised Additive Models}
+
+As mentioned, current methods are semi-restricted to linear dependencies and are unable to fit penalized splines. This assumption may generally work fine, though in reality certain covariaes such as distance from village or elevation which are common, a linear relationship ecologically doesn't make much sense. An animal would typically prefer to live at an optimal level of elevation rather than living as elevated as possible as a linear relationship would imply. Using our two-stage approach we can easily extend our models to be able to use \texttt{mgcv} and fit Generalised Additive Models. For this simulation study we go for a more realistic spatial surface, which can be created using a Gaussian Random Field (GRF) and relate density to our generated 'grf' covariate.
+
+We use function:
+
+$$D(x_s) = \exp\left(b_0 + \alpha\left(1 - \exp\left(-\gamma(x_s - \tau)\right)\right)\right) + 0.005$$
+
+Where $x_s$ is our simulated GRF value at session s. The parameter specifications are shown in table \ref{table:grf}.
+
+```{r}
+grf_seq <- seq(-3, 3, length.out = 100)
+plot(grf_seq, D.calc(grf_seq), type = 'l',
+     xlab = "GRF value", ylab = "True density")
+```
+
+This gives us density surface:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+true_plot
+```
+
+\section{Discussion}
+
+\subsection{Key Findings}
+
+So we have analysed three different versions of a two stage approach to Spatial Capture-Recapture using simulation studies. One with a simple x value controlling density and detectability
+
+\subsection{Comparison}
+
+# References:
+
+- <https://www.wellbeingintlstudiesrepository.org/bioaco/8/>
+- <https://pmc.ncbi.nlm.nih.gov/articles/PMC11638134/>
+- <https://www.otago.ac.nz/density/pdfs/Efford%202004%20Oikos.pdf>
